@@ -1,0 +1,10 @@
+{
+    "require-dev": {
+        "swoole/ide-helper": "~4.8.5"
+    },
+    "require": {
+        "symfony/http-client": "^5.4",
+        "nette/http": "^3.1",
+        "utilitte/asserts": "^1.1"
+    }
+}
