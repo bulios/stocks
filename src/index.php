@@ -1,16 +1,13 @@
 <?php
 
-use App\Ticker\FmpTickerClient;
-use App\Ticker\Result\Fmp\StockPrice;
-use Swoole\Table;
-use Swoole\WebSocket\Server;
 use Swoole\Http\Request;
+use Swoole\Table;
 use Swoole\WebSocket\Frame;
+use Swoole\WebSocket\Server;
+use WebChemistry\Stocks\FmpStockClient;
+use WebChemistry\Stocks\Result\Fmp\RealtimePrice;
 
 include_once __DIR__ . "/vendor/autoload.php";
-
-include_once __DIR__ . "/Ticker/Result/Fmp/StockPrice.php";
-include_once __DIR__ . "/Ticker/FmpTickerClient.php";
 
 $conn_table = new Table(2048);
 $conn_table->column("fd", Table::TYPE_INT, 4);
@@ -27,7 +24,7 @@ $server = new Server("0.0.0.0", 9502);
 $server->stock_price_table = $stock_price_table;
 $server->conn_table = $conn_table;
 
-$fmp = new FmpTickerClient();
+$fmp = new FmpStockClient("xxx");
 
 function getStockPrice(string $symbols): array
 {
@@ -37,36 +34,41 @@ function getStockPrice(string $symbols): array
     $data = [];
     $symbols = explode(",", $symbols);
 
-    foreach ($symbols as $symbol) {
+    foreach ($symbols as $key => $symbol) {
         if ($stock_price_table->exists($symbol)){
             $stock_price = $stock_price_table->get($symbol, "price");
 
-            $data[] = new StockPrice([
+            $data[] = new RealtimePrice([
                 "symbol" => $symbol,
                 "price" => $stock_price
             ]);
 
-            unset($symbol);
+            unset($symbols[$key]);
         }
     }
 
-    $stock_prices = $fmp->price($symbols);
+    if (!empty($symbols)){
+        $stock_prices = $fmp->realtimePrices($symbols);
 
-    foreach ($stock_prices as $stock_price) {
-        $stock_price_table->set(
-            $stock_price->getSymbol(),
-            [
-                "symbol" => $stock_price->getSymbol(),
-                "price" => $stock_price->getPrice(),
-                "reference_count" => 0
-            ]
-        );
+        foreach ($stock_prices->getAll() as $stock_price) {
+            $stock_price_table->set(
+                $stock_price->getSymbol(),
+                [
+                    "symbol" => $stock_price->getSymbol(),
+                    "price" => $stock_price->getPrice(),
+                    "reference_count" => 0
+                ]
+            );
 
-        $data[] = $stock_price;
+            $data[] = $stock_price;
+        }
     }
 
     return array_map(
-        fn (StockPrice $stockPrice) => $stockPrice->toArray(),
+        fn (RealtimePrice $stockPrice) => [
+            "symbol" => $stockPrice->getSymbol(),
+            "price" => $stockPrice->getPrice()
+        ],
         $data
     );
 }
