@@ -97,6 +97,25 @@ function decreaseSymbolReference(string|array $symbols){
     }
 }
 
+function countReferences(int $fd, string $new_symbols){
+    global $conn_table;
+
+    $new_symbols_array = explode(",", $new_symbols);
+    $symbols = $conn_table->get($fd, "symbols");
+
+    if (!empty($symbols)){
+        $symbols_array = explode(",", $symbols);
+
+        $decrease_symbols = array_diff($symbols_array, $new_symbols_array);
+        $increase_symbols = array_diff($new_symbols_array, $symbols_array);
+
+        decreaseSymbolReference($decrease_symbols);
+        increaseSymbolReference($increase_symbols);
+    } else {
+        increaseSymbolReference($new_symbols_array);
+    }
+}
+
 $server->on("Start", function(Server $server)
 {
     echo "Swoole WebSocket Server is started at http://127.0.0.1:9502\n";
@@ -116,13 +135,15 @@ $server->on('Open', function(Server $server, Request $request)
     $server->conn_table->set($request->fd, ["fd" => $request->fd, "symbols" => ""]);
 });
 
-$server->on('Message', function(Server $server, Frame $frame) use ($fmp)
+$server->on('Message', function(Server $server, Frame $frame)
 {
     echo "received message: {$frame->data}\n";
 
-    $server->conn_table->set($frame->fd, ["fd" => $frame->fd, "symbols" => $frame->data]);
-
     $server->push($frame->fd, json_encode(getStockPrice($frame->data)));
+
+    countReferences($frame->fd, $frame->data);
+
+    $server->conn_table->set($frame->fd, ["fd" => $frame->fd, "symbols" => $frame->data]);
 });
 
 $server->on('Close', function(Server $server, int $fd)
