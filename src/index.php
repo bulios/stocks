@@ -24,7 +24,7 @@ $server = new Server("0.0.0.0", 9502);
 $server->stock_price_table = $stock_price_table;
 $server->conn_table = $conn_table;
 
-$fmp = new FmpStockClient("41b535586463a0697a7f2b16dc55fc59");
+$fmp = new FmpStockClient("xxx");
 
 function saveStocksPrice(array $symbols): array
 {
