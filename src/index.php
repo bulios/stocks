@@ -24,11 +24,33 @@ $server = new Server("0.0.0.0", 9502);
 $server->stock_price_table = $stock_price_table;
 $server->conn_table = $conn_table;
 
-$fmp = new FmpStockClient("xxx");
+$fmp = new FmpStockClient("41b535586463a0697a7f2b16dc55fc59");
 
-function getStockPrice(string $symbols): array
+function saveStocksPrice(array $symbols): array
 {
     global $fmp;
+    global $stock_price_table;
+
+    $data = [];
+    $stock_prices = $fmp->realtimePrices($symbols);
+
+    foreach ($stock_prices->getAll() as $stock_price) {
+        $stock_price_table->set(
+            $stock_price->getSymbol(),
+            [
+                "symbol" => $stock_price->getSymbol(),
+                "price" => $stock_price->getPrice()
+            ]
+        );
+
+        $data[] = $stock_price;
+    }
+
+    return $data;
+}
+
+function getStocksPrice(string $symbols): array
+{
     global $stock_price_table;
 
     $data = [];
@@ -48,20 +70,7 @@ function getStockPrice(string $symbols): array
     }
 
     if (!empty($symbols)){
-        $stock_prices = $fmp->realtimePrices($symbols);
-
-        foreach ($stock_prices->getAll() as $stock_price) {
-            $stock_price_table->set(
-                $stock_price->getSymbol(),
-                [
-                    "symbol" => $stock_price->getSymbol(),
-                    "price" => $stock_price->getPrice(),
-                    "reference_count" => 0
-                ]
-            );
-
-            $data[] = $stock_price;
-        }
+        array_merge($data, saveStocksPrice($symbols));
     }
 
     return array_map(
@@ -122,24 +131,28 @@ $server->on("Start", function(Server $server)
 
     $server->tick(5000, function() use ($server)
     {
-        foreach ($server->conn_table as $conn) {
+        $symbols_to_update = [];
 
+        foreach ($server->stock_price_table as $stock_price) {
+            if ($stock_price["reference_count"]) $symbols_to_update[] = $stock_price["symbol"];
+        }
+
+        if (!empty($symbols_to_update)) saveStocksPrice($symbols_to_update);
+
+        foreach ($server->conn_table as $conn) {
+            if (!empty($conn["symbols"])) $server->push($conn["fd"], json_encode(getStocksPrice($conn["symbols"])));
         }
     });
 });
 
 $server->on('Open', function(Server $server, Request $request)
 {
-    echo "connection open: {$request->fd}\n";
-
     $server->conn_table->set($request->fd, ["fd" => $request->fd, "symbols" => ""]);
 });
 
 $server->on('Message', function(Server $server, Frame $frame)
 {
-    echo "received message: {$frame->data}\n";
-
-    $server->push($frame->fd, json_encode(getStockPrice($frame->data)));
+    $server->push($frame->fd, json_encode(getStocksPrice($frame->data)));
 
     countReferences($frame->fd, $frame->data);
 
@@ -148,16 +161,12 @@ $server->on('Message', function(Server $server, Frame $frame)
 
 $server->on('Close', function(Server $server, int $fd)
 {
-    echo "connection close: {$fd}\n";
-
     decreaseSymbolReference(explode(",", $server->conn_table->get($fd, "symbols")));
     $server->conn_table->del($fd);
 });
 
 $server->on('Disconnect', function(Server $server, int $fd)
 {
-    echo "connection disconnect: {$fd}\n";
-
     decreaseSymbolReference(explode(",", $server->conn_table->get($fd, "symbols")));
     $server->conn_table->del($fd);
 });
