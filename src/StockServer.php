@@ -2,15 +2,20 @@
 
 namespace App;
 
+use Nette\Utils\Json;
+use Nette\Utils\JsonException;
 use Swoole\Http\Request;
 use Swoole\Table;
 use Swoole\WebSocket\Frame;
 use Swoole\WebSocket\Server;
+use WebChemistry\Stocks\Exception\StockClientException;
+use WebChemistry\Stocks\Regex\TickerRegex;
 use WebChemistry\Stocks\Result\Fmp\RealtimePrice;
 use WebChemistry\Stocks\StockClientInterface;
 
 final class StockServer
 {
+    private const SYMBOLS_DELIMITER = ',';
 
 	private Table $connectionTable;
 
@@ -64,7 +69,15 @@ final class StockServer
 				// Send updated prices to users, which requested at least one stock price
 				foreach ($this->connectionTable as $conn) {
 					if ($conn['symbols']) {
-						$server->push($conn['fd'], json_encode($this->getStocksPrice($conn['symbols'])));
+                        try {
+                            $data = Json::encode($this->getStocksPrice($conn['symbols']));
+                        } catch (JsonException $e){
+                            fwrite(STDERR, $e->getMessage());
+
+                            $data = '{}';
+                        }
+
+						$server->push($conn['fd'], $data);
 					}
 				}
 			});
@@ -76,25 +89,35 @@ final class StockServer
 		});
 
 		$this->server->on('Message', function(Server $server, Frame $frame): void {
+            $frame_data = $this->checkSymbols($frame->data);
+
 			// Send stock prices to user based on frame data
-			$server->push($frame->fd, json_encode($this->getStocksPrice($frame->data)));
+            try {
+                $stock_prices = Json::encode($this->getStocksPrice($frame_data));
+            } catch (JsonException $e){
+                fwrite(STDERR, $e->getMessage());
+
+                $stock_prices = '{}';
+            }
+
+			$server->push($frame->fd, $stock_prices);
 
 			// Count symbol references
-			$this->countReferences($frame->fd, $frame->data);
+			$this->countReferences($frame->fd, $frame_data);
 
 			// Save sent symbols to user in table
-			$this->connectionTable->set((string) $frame->fd, ['fd' => $frame->fd, 'symbols' => $frame->data]);
+			$this->connectionTable->set((string) $frame->fd, ['fd' => $frame->fd, 'symbols' => $frame_data]);
 		});
 
 		$this->server->on('Close', function(Server $server, int $fd): void {
 			// Remove users' symbol references and delete him from table
-			$this->decreaseSymbolReference(explode(',', $this->connectionTable->get((string) $fd, 'symbols')));
+			$this->decreaseSymbolReference(explode(self::SYMBOLS_DELIMITER, $this->connectionTable->get((string) $fd, 'symbols')));
 			$this->connectionTable->del((string) $fd);
 		});
 
 		$this->server->on('Disconnect', function(Server $server, int $fd): void {
 			// Remove users' symbol references and delete him from table
-			$this->decreaseSymbolReference(explode(',', $this->connectionTable->get((string) $fd, 'symbols')));
+			$this->decreaseSymbolReference(explode(self::SYMBOLS_DELIMITER, $this->connectionTable->get((string) $fd, 'symbols')));
 			$this->connectionTable->del((string) $fd);
 		});
 
@@ -114,7 +137,15 @@ final class StockServer
 		}
 
 		$data = [];
-		$stock_prices = $this->stockClient->realtimePrices($symbols);
+
+        try {
+            $stock_prices = $this->stockClient->realtimePrices($symbols);
+        } catch (StockClientException $e){
+            fwrite(STDERR, $e->getMessage());
+            fwrite(STDERR, $e->getPrevious()->getMessage());
+
+            return $data;
+        }
 
 		foreach ($stock_prices->getAll() as $stock_price) {
 			$this->stockPriceTable->set(
@@ -140,7 +171,7 @@ final class StockServer
 	public function getStocksPrice(string $symbols): array
 	{
 		$data = [];
-		$symbols = explode(',', $symbols);
+		$symbols = explode(self::SYMBOLS_DELIMITER, $symbols);
 
 		// Iterate through specified symbols and check, if stock price is already saved in table
 		foreach ($symbols as $key => $symbol) {
@@ -194,6 +225,10 @@ final class StockServer
 	{
 		foreach ((array) $symbols as $symbol) {
 			$this->stockPriceTable->decr($symbol, 'reference_count');
+
+            if ($this->stockPriceTable->get($symbol, 'reference_count') === 0){
+                $this->stockPriceTable->del($symbol);
+            }
 		}
 	}
 
@@ -203,12 +238,12 @@ final class StockServer
 	 */
 	public function countReferences(int $fd, string $new_symbols): void
 	{
-		$new_symbols_array = explode(',', $new_symbols); // Requested symbols
+		$new_symbols_array = explode(self::SYMBOLS_DELIMITER, $new_symbols); // Requested symbols
 		$symbols = $this->connectionTable->get((string) $fd, 'symbols'); // Previously requested symbols
 
 		// If user hasn't requested any stock prices yet, increase new symbols reference count
 		if ($symbols) {
-			$symbols_array = explode(',', $symbols);
+			$symbols_array = explode(self::SYMBOLS_DELIMITER, $symbols);
 
 			$decrease_symbols = array_diff($symbols_array, $new_symbols_array);
 			$increase_symbols = array_diff($new_symbols_array, $symbols_array);
@@ -220,4 +255,20 @@ final class StockServer
 		}
 	}
 
+    /**
+     * @param string $symbols
+     * @return string
+     */
+    private function checkSymbols(string $symbols): string
+    {
+        $symbols = explode(self::SYMBOLS_DELIMITER, $symbols);
+
+        foreach ($symbols as $key => $symbol) {
+            if (!TickerRegex::match($symbol)){
+                unset($symbols[$key]);
+            }
+        }
+
+        return implode(self::SYMBOLS_DELIMITER, $symbols);
+    }
 }
